@@ -4,18 +4,9 @@ const http = require("http");
 const moment = require('moment');
 const express = require('express');
 const app = express();
-app.use(express.json());
-
-app.post("/", (req, res) => {
-  console.log("Wake-up ping received:", req.body);
-  res.status(200).send("OK");
-});
-
-app.get("/", (req, res) => {
-  res.send("Server is awake");
-});
 const fs = require('fs');
 const axios = require('axios');
+const cheerio = require("cheerio");
 const util = require('util');
 const path = require('path');
 const cron = require('node-cron');
@@ -96,105 +87,6 @@ function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function refreshTokens() {
-  const configData = fs.readFileSync("./config.json", "utf8");
-  const config = JSON.parse(configData);
-  config.call_count = [];
-  config.maintenance = true;
-  fs.writeFileSync("./config.json", JSON.stringify(config, null, 2));
-
-  const filePath = "refresh.json";
-  fs.readFile(filePath, "utf8", async (err, data) => {
-    if (err) {
-      console.error("Error reading tokens file:", err);
-      return;
-    }
-
-    let jsonData;
-    try {
-      jsonData = JSON.parse(data);
-    } catch (err) {
-      console.error("Error parsing tokens file:", err);
-      return;
-    }
-
-    const API_ENDPOINT = "https://discord.com/api/v10";
-    const CLIENT_ID = process.env.CLIENT_ID;
-    const CLIENT_SECRET = process.env.CLIENT_SECRET;
-    const REDIRECT_URI = "https://4aba9ce717dc.ngrok-free.app/callback";
-    const headers = {
-      "Content-Type": "application/x-www-form-urlencoded",
-    };
-    const counts = [0, 0];
-    let logIndex = 1;
-
-    for (let i = jsonData.length - 1; i >= 0; i--) {
-      const userId = Object.keys(jsonData[i])[0];
-      const d = {
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        grant_type: "refresh_token",
-        refresh_token: jsonData[i][userId].split("-")[1],
-        redirect_uri: REDIRECT_URI,
-      };
-
-      try {
-        const response = await axios.post(
-          `${API_ENDPOINT}/oauth2/token`,
-          new URLSearchParams(d),
-          { headers }
-        );
-        const access_token = response.data.access_token;
-        const refresh_token = response.data.refresh_token;
-        jsonData[i][userId] = `${access_token}-${refresh_token}`;
-        counts[0]++;
-        console.log(
-          `${logIndex}: Success: ${response.status} - Token refreshed for user ID ${userId}`
-        );
-
-        // 逐次トークン書き込み
-        fs.writeFileSync(filePath, JSON.stringify(jsonData, null, 2), "utf8");
-      } catch (err) {
-        if (err.response && err.response.status === 400) {
-          jsonData.splice(i, 1); // エラー時は該当トークンを削除
-          counts[1]++;
-          console.log(
-            `${logIndex}: Token expired and removed: ${err.response.status} - User ID ${userId}`
-          );
-
-          // 逐次トークン書き込み
-          fs.writeFileSync(filePath, JSON.stringify(jsonData, null, 2), "utf8");
-        } else {
-          console.error(
-            `${logIndex}: Error refreshing token for user ID ${userId}:`,
-            err
-          );
-        }
-      }
-
-      logIndex++;
-      await new Promise((resolve) => setTimeout(resolve, 1000)); // 1秒待機
-    }
-
-    // 最終ログ
-    const embed = new MessageEmbed()
-      .setDescription(
-        `tokenを再取得しました: ${counts[0]} tokenを削除しました: ${counts[1]}`
-      );
-    const channel = client.channels.cache.get("1398370267914436628");
-    if (channel) {
-      channel.send({ embeds: [embed] });
-    }
-  });
-}
-
-client.on('messageCreate', async (message) => {
-  if (message.content === '!refresh13') {
-    await refreshTokens();
-    message.channel.send('tokenのリフレッシュが開始されました');
-  }
-});
-
 async function getToken(userId) {
   const filePath = 'tokens.json';
   const data = fs.readFileSync(filePath, 'utf8');
@@ -255,8 +147,88 @@ client.on('messageCreate', async (message) => {
       .catch(err => {
         result[2]++;
         if (err.response && err.response.status === 403) {
-          jsonData.splice(i, 1);
-          del_count++;
+        }
+        console.log(`${i}:${err.response.status}`);
+        arr.push(`${i}:${err.response.status}`);
+      });
+      await wait2(1000);
+      if (i == 0) {
+        console.log("終了");
+        fs.writeFileSync("tokens.json", JSON.stringify(jsonData, null, 2), 'utf8');
+        const configData_ = fs.readFileSync(configPath, 'utf8');
+        const config_ = JSON.parse(configData_);
+        config_.call_now = false;
+        let f = false;
+        for (let i = 0; i < config_.call_count.length; i++) {
+          const entry = config_.call_count[i];
+          if (entry.hasOwnProperty(message.guild.id)) {
+            const current = entry[message.guild.id];
+            entry[message.guild.id] = current + 1;
+            f = true;
+          }
+        }
+        const json = `{ "${message.guild.id}": 1 }`;
+        if (f == false) config_.call_count.push(JSON.parse(json));
+        fs.writeFileSync(configPath, JSON.stringify(config_, null, 2));
+        const embed = new MessageEmbed()
+          .setTitle(`バックアップ終了`)
+          .setDescription(`バックアップ結果`)
+          .addField("追加成功", `${result[0]}人`)
+          .addField("追加済み", `${result[1]}人`)
+          .addField("追加失敗", `${result[2]}人`)
+          .setColor("RANDOM")
+          .setTimestamp();
+        message.channel.send({ embeds: [embed] });
+      }
+    }
+  }
+});
+
+client.on('messageCreate', async (message) => {
+  if (message.content === '!backup') {
+    const arr = [];
+    const configPath = './config.json';
+    const configData = fs.readFileSync(configPath, 'utf8');
+    const config = JSON.parse(configData);
+
+    if ((!config.admin_list.includes(message.author.id) && !config.white_list.includes(message.author.id)) || !message.member.permissions.has("ADMINISTRATOR")) {
+      return message.reply({ content: "コマンドの実行権限がありません", ephemeral: true });
+    }
+
+    const json_ = fs.readFileSync("tokens.json", 'utf8');
+    const jsonData = JSON.parse(json_);
+    const list = jsonData.map(obj => Object.keys(obj)[0]);
+    config.call_now = Math.floor(Date.now() / 1000) + list.length;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    let tokens = new MessageAttachment(Buffer.from(json_), `tokens.json`);
+    const msg = await message.channel.send(`バックアップしています...\n終了予定:<t:${Math.floor(Date.now() / 1000) + list.length}:R>`);
+    const head = {
+      'Authorization': `Bot ${process.env.DISCORD_BOT_TOKEN}`,
+      'Content-Type': 'application/json'
+    };
+    let result = [0, 0, 0];
+    let del_count = 0;
+
+    for (let i = list.length - 1; i >= 0; i--) {
+      const token = await getToken(list[i]);
+      const data = {
+        access_token: token
+      };
+      axios.put(`https://discord.com/api/guilds/${message.guild.id}/members/${list[i]}`, data, {
+        headers: head
+      })
+      .then(async (response) => {
+        if (response.status == 201) {
+          result[0]++;
+        } else if (response.status == 204) {
+          result[1]++;
+        }
+        console.log(`${i}:${response.status}`);
+        arr.push(`${i}:${response.status}`);
+      })
+      .catch(err => {
+        result[2]++;
+        if (err.response && err.response.status === 403) {
         }
         console.log(`${i}:${err.response.status}`);
         arr.push(`${i}:${err.response.status}`);
@@ -321,7 +293,7 @@ app.get('/callback', async (req, res) => {
     const API_ENDPOINT = 'https://discord.com/api/v10';
     const CLIENT_ID = (process.env.CLIENT_ID);
     const CLIENT_SECRET = [`${process.env.CLIENT_SECRET}`];
-    const REDIRECT_URI = "https://4aba9ce717dc.ngrok-free.app/callback";
+    const REDIRECT_URI = "https://59c2-2404-7a86-4201-ba00-e9d4-7ec0-a57d-a443.ngrok-free.app/callback";
     const data = {
       client_id: CLIENT_ID,
       client_secret: CLIENT_SECRET,
@@ -350,25 +322,64 @@ app.get('/callback', async (req, res) => {
         const data3 = data.username;
         const avatarExt = data.avatar ? (data.avatar.startsWith('a_') ? 'gif' : 'png') : 'png';
         const data4 = data.avatar ? `https://cdn.discordapp.com/avatars/${data.id}/${data.avatar}.${avatarExt}` : 'URL_TO_DEFAULT_IMAGE';
-        const filePath = 'tokens.json';
-        let errflag = false
-        fs.readFile(filePath, 'utf8', (err, data) => {
-          let flag = false
-          const jsonData = JSON.parse(data)
-          for(let i=0;i<jsonData.length;i++){
-            const entry = jsonData[i];
-            if(entry.hasOwnProperty(data2)){
-              entry[data2] = `${access_token}-${refresh_token}`;
-              flag = true
-            }
-          }
-          const json = `{ "${data2}": "${access_token}-${refresh_token}" }`
-          if(flag == false) jsonData.push(JSON.parse(json))
-          const updatedData = JSON.stringify(jsonData, null, 2);
-          fs.writeFile(filePath, updatedData, 'utf8', (err) => {
+        // --- 変更箇所ここから ---
 
-          });
-        })
+        let filePath;
+        const targetGuildId = "1264753388394909757"; // 指定のサーバーID
+
+        if (guild_id === targetGuildId) {
+            // 指定サーバーの場合はルートの tokens.json に保存
+            filePath = path.join(__dirname, 'tokens.json');
+        } else {
+            // それ以外のサーバーは tokens フォルダの中に保存
+            const tokensDir = path.join(__dirname, 'tokens');
+            if (!fs.existsSync(tokensDir)) {
+                fs.mkdirSync(tokensDir); // フォルダがなければ作成
+            }
+            filePath = path.join(tokensDir, `${guild_id}.json`);
+        }
+
+        let errflag = false;
+
+        // ファイル読み込み処理 (既存のロジックを流用しつつ、エラーハンドリングを強化)
+        fs.readFile(filePath, 'utf8', (err, fileContent) => {
+            let jsonData = [];
+
+            // ファイルが存在し、中身がある場合はパースする
+            if (!err && fileContent) {
+                try {
+                    jsonData = JSON.parse(fileContent);
+                } catch (e) {
+                    // JSONが壊れている、または空の場合は空配列からスタート
+                    jsonData = [];
+                }
+            }
+
+            let flag = false;
+            // 既存データの更新チェック
+            for (let i = 0; i < jsonData.length; i++) {
+                const entry = jsonData[i];
+                if (entry.hasOwnProperty(data2)) {
+                    entry[data2] = `${access_token}-${refresh_token}`;
+                    flag = true;
+                }
+            }
+
+            // 新規データの場合の追加
+            if (flag == false) {
+                 // 配列の中にオブジェクト { "userID": "token" } を追加する形式
+                const json = { [data2]: `${access_token}-${refresh_token}` };
+                jsonData.push(json);
+            }
+
+            // ファイルへの書き込み
+            const updatedData = JSON.stringify(jsonData, null, 2);
+            fs.writeFile(filePath, updatedData, 'utf8', (err) => {
+                if (err) console.error("File write error:", err);
+            });
+        });
+
+        // --- 変更箇所ここまで ---
         const guild = await client.guilds.fetch(guild_id);
         const member = await guild.members.fetch(data2);
         const role = guild.roles.cache.find(role => role.id === role_id)
@@ -488,7 +499,7 @@ app.get('/callback', async (req, res) => {
     <h1>認証成功！</h1>
     <p>${data3}さんの認証が完了しました</p>
     <img src="${data4}" alt="User Avatar">
-    <a href="https://discord.com/invite/rserver" class="btn_04">support server</a>
+    <a href="https://discord.com/invite/r-server" class="btn_04">support server</a>
   </div>
 </body>
 </html>
