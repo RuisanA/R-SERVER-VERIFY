@@ -11,7 +11,6 @@ const path = require('path');
 const cron = require('node-cron');
 const Keyv = require('keyv');
 const db = new Keyv(`sqlite://db.sqlite`, { table: "db" });
-require('dotenv').config();
 const client = new Client({
   partials: ["CHANNEL"],
   intents: new Intents(32767)
