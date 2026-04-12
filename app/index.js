@@ -6,7 +6,6 @@ const express = require('express');
 const app = express();
 const fs = require('fs');
 const axios = require('axios');
-const cheerio = require("cheerio");
 const util = require('util');
 const path = require('path');
 const cron = require('node-cron');
