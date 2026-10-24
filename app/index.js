@@ -4,6 +4,16 @@ const http = require("http");
 const moment = require('moment');
 const express = require('express');
 const app = express();
+app.use(express.json());
+
+app.post("/", (req, res) => {
+  console.log("Wake-up ping received:", req.body);
+  res.status(200).send("OK");
+});
+
+app.get("/", (req, res) => {
+  res.send("Server is awake");
+});
 const fs = require('fs');
 const axios = require('axios');
 const util = require('util');
